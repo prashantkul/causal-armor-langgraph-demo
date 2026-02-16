@@ -12,6 +12,10 @@ Requires:
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()  # must run before any SDK imports read env vars
+
 import asyncio
 import pathlib
 

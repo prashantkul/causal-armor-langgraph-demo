@@ -8,9 +8,6 @@ actions.  When the toggle is ``False`` the node is a transparent pass-through.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Sequence
-
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
@@ -18,11 +15,8 @@ from causal_armor import (
     CausalArmorConfig,
     CausalArmorMiddleware,
     DefenseResult,
-    Message,
-    MessageRole,
-    ToolCall,
 )
-from causal_armor.providers.gemini import GeminiSanitizerProvider
+from causal_armor.providers.gemini import GeminiActionProvider, GeminiSanitizerProvider
 from causal_armor.providers.vllm import VLLMProxyProvider
 
 from demo.adapters import (
@@ -33,28 +27,50 @@ from demo.adapters import (
 from demo.state import AgentState
 
 # ---------------------------------------------------------------------------
-# Mock action provider — sufficient for demo (sanitizer is real Gemini)
+# Tool declarations for the Gemini action provider (function calling)
 # ---------------------------------------------------------------------------
 
-
-class MockActionProvider:
-    """Regenerates a safe action after sanitisation."""
-
-    async def generate(
-        self, messages: Sequence[Message]
-    ) -> tuple[str, list[ToolCall]]:
-        action = ToolCall(
-            name="book_flight",
-            arguments={"flight_id": "AA1742", "passenger": "Alex Johnson"},
-            raw_text=json.dumps(
-                {
-                    "name": "book_flight",
-                    "arguments": {"flight_id": "AA1742", "passenger": "Alex Johnson"},
-                }
-            ),
-        )
-        return (action.raw_text, [action])
-
+_GEMINI_TOOLS = [
+    {
+        "function_declarations": [
+            {
+                "name": "book_flight",
+                "description": "Book a specific flight for a passenger.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "flight_id": {"type": "string", "description": "Flight identifier"},
+                        "passenger": {"type": "string", "description": "Passenger name"},
+                    },
+                    "required": ["flight_id", "passenger"],
+                },
+            },
+            {
+                "name": "send_money",
+                "description": "Transfer money to an external account.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number", "description": "Amount to transfer"},
+                        "account": {"type": "string", "description": "Destination account"},
+                    },
+                    "required": ["amount", "account"],
+                },
+            },
+            {
+                "name": "read_travel_plan",
+                "description": "Read and extract text from a travel-plan PDF.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Path to PDF file"},
+                    },
+                    "required": ["file_path"],
+                },
+            },
+        ]
+    }
+]
 
 # ---------------------------------------------------------------------------
 # Middleware factory
@@ -64,13 +80,13 @@ _UNTRUSTED_TOOLS = frozenset({"read_travel_plan"})
 
 
 def _build_middleware() -> CausalArmorMiddleware:
-    """Build CausalArmor middleware.
+    """Build CausalArmor middleware with real providers.
 
-    Model names and vLLM base URL are read from CAUSAL_ARMOR_* env vars
+    All model names and vLLM base URL are read from CAUSAL_ARMOR_* env vars
     (loaded from .env by the causal_armor package).
     """
     return CausalArmorMiddleware(
-        action_provider=MockActionProvider(),
+        action_provider=GeminiActionProvider(tools=_GEMINI_TOOLS),
         proxy_provider=VLLMProxyProvider(),
         sanitizer_provider=GeminiSanitizerProvider(),
         config=CausalArmorConfig(margin_tau=0.0),
