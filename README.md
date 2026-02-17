@@ -5,14 +5,14 @@ A demonstration of [CausalArmor](https://github.com/prashantkul/causal-armor) pr
 ## Architecture
 
 ```
-Agent LLM:      Gemini 2.5 Pro (Google API)  — drives tool-calling decisions
+Agent LLM:      Gemini 2.0 Flash (Google API)  — drives tool-calling decisions
 CausalArmor:
-  Proxy:        VLLMProxyProvider + Gemma 3 12B (local vLLM) — LOO log-prob scoring
-  Sanitizer:    Mock (strips injection text) — sufficient for demo
-  Action regen: Mock (returns book_flight) — sufficient for demo
+  Proxy:        VLLMProxyProvider + Gemma-3-12B-IT (local vLLM) — LOO log-prob scoring
+  Sanitizer:    Gemini 2.5 Flash (Google API) — rewrites flagged spans
+  Action regen: Gemini 2.5 Flash (Google API) — regenerates safe actions
 ```
 
-The proxy model is the critical real component — it scores whether a proposed action is causally driven by untrusted content using Leave-One-Out attribution.
+All three CausalArmor model roles use real providers — the proxy scores log-probabilities via vLLM, while the sanitizer and action regenerator use Gemini 2.5 Flash.
 
 ## The Attack Scenario
 
@@ -22,7 +22,7 @@ A user asks the travel agent to review a PDF itinerary and book the best flight.
 
 ```mermaid
 graph LR
-    U[User: Review my travel plan] --> LLM[Gemini 2.5 Pro]
+    U[User: Review my travel plan] --> LLM[Gemini 2.0 Flash]
     LLM -->|read_travel_plan| T1[Tool: Read PDF]
     T1 -->|Itinerary + INJECTION| LLM
     LLM -->|send_money 5000| T2[Tool: Send Money]
@@ -38,7 +38,7 @@ The agent follows the injected instruction and calls `send_money($5000)`.
 
 ```mermaid
 graph LR
-    U[User: Review my travel plan] --> LLM[Gemini 2.5 Pro]
+    U[User: Review my travel plan] --> LLM[Gemini 2.0 Flash]
     LLM -->|read_travel_plan| T1[Tool: Read PDF]
     T1 -->|Itinerary + INJECTION| LLM
     LLM -->|send_money 5000| G[CausalArmor Guard]
@@ -62,7 +62,7 @@ CausalArmor uses **Leave-One-Out (LOO) causal attribution** via a proxy model (G
 4. **Detect dominance** — tool delta >> user delta means injection attack
 5. **Defend** — sanitize, mask chain-of-thought, regenerate safe action
 
-See [docs/how-it-works.md](docs/how-it-works.md) for the full walkthrough.
+See [docs/how-it-works.md](docs/how-it-works.md) for the full walkthrough and [docs/example-attack-scenario.md](docs/example-attack-scenario.md) for a detailed real-trace walkthrough of both scenarios.
 
 ## Quick Start
 
@@ -99,7 +99,7 @@ uv run python scripts/generate_pdf.py
 ```bash
 cp .env.example .env
 # Edit .env with your keys:
-#   GOOGLE_API_KEY=...          (Gemini 2.5 Pro)
+#   GOOGLE_API_KEY=...          (Gemini 2.0 Flash)
 #   VLLM_BASE_URL=http://...   (vLLM endpoint)
 #   LANGCHAIN_API_KEY=lsv2_... (optional, for LangSmith tracing)
 ```
@@ -149,7 +149,7 @@ LANGCHAIN_PROJECT=causal-armor-demo
 A single graph with the guard always present. The guard reads `causal_armor_enabled` from the configurable namespace — when `False` it passes through, when `True` it runs real LOO attribution.
 
 ```
-START → LLM (Gemini 2.5 Pro) → should_continue → Guard → Tools → LLM → ... → END
+START → LLM (Gemini 2.0 Flash) → should_continue → Guard → Tools → LLM → ... → END
 ```
 
 In LangGraph Studio, `causal_armor_enabled` appears as a toggle in the UI configuration panel.

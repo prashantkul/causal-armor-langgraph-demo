@@ -1,0 +1,34 @@
+# CausalArmor configuration
+# Values here are overridden by CAUSAL_ARMOR_* env vars and explicit code args.
+
+[causal_armor]
+
+# Detection threshold tau (Eq. 5).
+# At tau=0, any untrusted span more influential than the user triggers detection.
+# Larger tau makes detection more sensitive (flags more spans).
+margin_tau = 0.0
+
+# Tool names whose results are trusted and skip LOO attribution.
+# Example: privileged_tools = ["get_weather", "get_time"]
+privileged_tools = []
+
+# Whether to redact assistant reasoning before regeneration.
+enable_cot_masking = true
+
+# Whether to mask assistant reasoning before LOO scoring.
+# In multi-turn conversations the agent's reasoning can propagate injected
+# instructions, hiding the true causal signal. Masking isolates the
+# influence of external inputs (user request, tool results).
+mask_cot_for_scoring = true
+
+# Whether to run the sanitizer on flagged spans.
+enable_sanitization = true
+
+# Optional cap on concurrent LOO scoring requests (null = no limit).
+# max_loo_batch_size = 4
+
+# Whether to emit attribution diagnostics to logs.
+log_attributions = true
+
+# Replacement text inserted in place of chain-of-thought messages.
+# cot_redaction_text = "[Reasoning redacted for security]"

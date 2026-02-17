@@ -8,8 +8,11 @@ actions.  When the toggle is ``False`` the node is a transparent pass-through.
 
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
+from langsmith import trace as ls_trace
 
 from causal_armor import (
     CausalArmorConfig,
@@ -25,6 +28,8 @@ from demo.adapters import (
     lc_tool_call_to_causal_armor,
 )
 from demo.state import AgentState
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool declarations for the Gemini action provider (function calling)
@@ -89,7 +94,7 @@ def _build_middleware() -> CausalArmorMiddleware:
         action_provider=GeminiActionProvider(tools=_GEMINI_TOOLS),
         proxy_provider=VLLMProxyProvider(),
         sanitizer_provider=GeminiSanitizerProvider(),
-        config=CausalArmorConfig(margin_tau=0.0),
+        config=CausalArmorConfig.from_env(),
     )
 
 
@@ -115,13 +120,20 @@ async def causal_armor_guard(state: AgentState, config: RunnableConfig) -> dict:
 
     # ---- Pass-through when disabled ----
     if not enabled:
-        print("    [GUARD] CausalArmor DISABLED — passing through")
+        logger.info("[GUARD] CausalArmor DISABLED — passing through")
         return {"messages": []}
 
     # ---- Run CausalArmor defence ----
-    print("    [GUARD] CausalArmor ENABLED — running LOO attribution")
+    logger.info("[GUARD] CausalArmor ENABLED — running LOO attribution")
 
     ca_messages = langchain_to_causal_armor(messages)
+
+    # Debug: log converted messages so we can verify untrusted spans
+    tool_msgs = [m for m in ca_messages if m.role.value == "tool"]
+    logger.info(f"[GUARD] Context has {len(ca_messages)} messages, {len(tool_msgs)} tool results")
+    for tm in tool_msgs:
+        logger.info(f"[GUARD]   tool_name={tm.tool_name} content_len={len(tm.content)}")
+
     middleware = _build_middleware()
 
     defended_tool_calls: list[dict] = []
@@ -130,11 +142,50 @@ async def causal_armor_guard(state: AgentState, config: RunnableConfig) -> dict:
     try:
         for tc in last_msg.tool_calls:
             ca_tc = lc_tool_call_to_causal_armor(tc)
-            result = await middleware.guard(
-                ca_messages,
-                ca_tc,
-                untrusted_tool_names=_UNTRUSTED_TOOLS,
-            )
+
+            with ls_trace(
+                name=f"loo_attribution:{tc['name']}",
+                run_type="chain",
+                inputs={
+                    "tool_name": tc["name"],
+                    "tool_args": tc["args"],
+                },
+            ) as rt:
+                result = await middleware.guard(
+                    ca_messages,
+                    ca_tc,
+                    untrusted_tool_names=_UNTRUSTED_TOOLS,
+                )
+
+                # Build trace output metadata
+                trace_output: dict = {
+                    "was_defended": result.was_defended,
+                    "original_action": {
+                        "name": result.original_action.name,
+                        "arguments": result.original_action.arguments,
+                    },
+                    "final_action": {
+                        "name": result.final_action.name,
+                        "arguments": result.final_action.arguments,
+                    },
+                }
+                if result.detection:
+                    attr = result.detection.attribution
+                    trace_output["detection"] = {
+                        "delta_user_normalized": round(attr.delta_user_normalized, 4),
+                        "span_attributions_normalized": {
+                            k: round(v, 4)
+                            for k, v in attr.span_attributions_normalized.items()
+                        },
+                        "is_attack_detected": result.detection.is_attack_detected,
+                        "flagged_spans": list(result.detection.flagged_spans),
+                        "margin_tau": result.detection.margin_tau,
+                    }
+                else:
+                    trace_output["detection"] = None
+                    trace_output["skipped_reason"] = "no untrusted spans in context"
+                rt.outputs = trace_output
+
             results.append(result)
 
             if result.was_defended:
@@ -157,13 +208,15 @@ async def causal_armor_guard(state: AgentState, config: RunnableConfig) -> dict:
         orig = result.original_action
         final = result.final_action
         if result.was_defended:
-            print(f"    [GUARD] BLOCKED: {orig.name}({orig.arguments})")
-            print(f"    [GUARD] REPLACED WITH: {final.name}({final.arguments})")
+            logger.info(f"[GUARD] BLOCKED: {orig.name}({orig.arguments})")
+            logger.info(f"[GUARD] REPLACED WITH: {final.name}({final.arguments})")
             if result.detection:
                 attr = result.detection.attribution
-                print(f"    [GUARD] LOO scores — delta_user: {attr.delta_user_normalized:.3f}, "
-                      f"span deltas: {attr.span_attributions_normalized}")
+                logger.info(
+                    f"[GUARD] LOO scores — delta_user: {attr.delta_user_normalized:.3f}, "
+                    f"span deltas: {attr.span_attributions_normalized}"
+                )
         else:
-            print(f"    [GUARD] PASSED: {orig.name}({orig.arguments})")
+            logger.info(f"[GUARD] PASSED: {orig.name}({orig.arguments})")
 
     return {"messages": [new_msg]}
